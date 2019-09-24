@@ -28,10 +28,6 @@ sub set_config {
         default => 5,
         type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
   }, {
-        setting => 'sa2dnsblc_hamscore',
-        default => 0,
-        type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
-  }, {
         setting => 'sa2dnsblc_host',
         default => 'localhost',
         type => $Mail::SpamAssassin::Conf::CONF_TYPE_STRING
@@ -40,19 +36,17 @@ sub set_config {
         default => '5055',
         type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
   }, {
-        setting => 'sa2dnsblc_timeout',
-        default => '2',
+        setting => 'sa2dnsblc_check_mynets',
+        default => '0',
         type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
-  }, {
-        setting => 'sa2dnsblc_retries',
-        default => '2',
-        type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
-  }, {
-	setting => 'sa2dnsblc_check_mynets',
-	default => '0',
-	type => $Mail::SpamAssassin::Conf::CONF_TYPE_NUMERIC
   });
  $conf->{parser}->register_commands(\@cmds);
+}
+
+sub uri_encode {
+  my ($rv) = @_;
+  $rv =~ s/([^A-Za-z0-9\-\._~])/sprintf("%%%2.2X", ord($1))/ge;
+  return $rv;
 }
 
 sub sa2dnsblc {
@@ -71,77 +65,39 @@ sub sa2dnsblc {
   my $lasthop = $permsgstatus->{relays_external}->[0];
   my $lasthopip = $lasthop->{ip} || '';
   $lasthopip = $1 if $lasthopip =~ /^([0-9a-fA-F.:]+)$/; # untaint lasthopip;
+  chomp $lasthopip;
   dbg("SA2DNSBLC: LASTHOP=$lasthopip");
 
   my $subject = $permsgstatus->get('Subject'); 
-  $subject = $1 if $subject =~ /^([[:ascii:]]*)$/; # untaint subject;
+  $subject = uri_encode($subject);
   dbg("SA2DNSBLC: Subject=$subject");
-
-  my $from = $permsgstatus->get('From');
-  $from = $1 if $from =~ /^([[:ascii:]]*)$/; # untaint from;
-  dbg("SA2DNSBLC: From=$from");
-  my $to = $permsgstatus->get('To');
-  $to = $1 if $to =~ /^([[:ascii:]]*)$/; # untaint to;
-  dbg("SA2DNSBLC: To=$to");
 
   my $score  = sprintf("%2.1f", $permsgstatus->{score});
   dbg("SA2DNSBLC: SCORE=$score");
 
   my $sa2dnsblc_spamscore = $permsgstatus->{main}->{conf}->{'sa2dnsblc_spamscore'} || '5';
   dbg("SA2DNSBLC: REQUIRED SPAM SCORE=$sa2dnsblc_spamscore");
-  my $sa2dnsblc_hamscore = $permsgstatus->{main}->{conf}->{'sa2dnsblc_hamscore'} || '0';
-  dbg("SA2DNSBLC: REQUIRED HAM SCORE=$sa2dnsblc_hamscore");
 
-  # if the sa scoring hits our defined scoring to report, send the ip to the sa2dnsbld
-  if(($score >= $sa2dnsblc_spamscore || $score <= $sa2dnsblc_hamscore) && $lasthopip) {
-	my $status = '';
-	if($score >= $sa2dnsblc_spamscore) {
-		$status = 'spam';
-	} else {
-		$status = 'ham';
-	}
-        my $sa2dnsblc_host = $permsgstatus->{main}->{conf}->{'sa2dnsblc_host'} || '127.0.0.1';
-        $sa2dnsblc_host = $1 if $sa2dnsblc_host =~ /^([a-zA-Z0-9\-.:]{1,255})$/; # untaint fqdn or ip;
-        my $sa2dnsblc_port = $permsgstatus->{main}->{conf}->{'sa2dnsblc_port'} || '5055';
-        $sa2dnsblc_port = $1 if $sa2dnsblc_port =~ /^([0-9]{1,5})$/; # untaint port;
-        my $sa2dnsblc_timeout = $permsgstatus->{main}->{conf}->{'sa2dnsblc_timeout'} || '2';
-        $sa2dnsblc_timeout = $1 if $sa2dnsblc_timeout =~ /^([0-9]+)$/; # untaint timeout;
-        my $sa2dnsblc_retries = $permsgstatus->{main}->{conf}->{'sa2dnsblc_retries'} || '2';
-        $sa2dnsblc_retries = $1 if $sa2dnsblc_retries =~ /^([0-9]+)$/; # untaint retries;
-
-        my $input = '';
-        my $output = "$lasthopip#$status#$from#$to#$subject";
-        my $sock = IO::Socket::INET->new(Proto => 'udp', PeerPort => $sa2dnsblc_port, PeerAddr => $sa2dnsblc_host);
-        return 0 if(!defined($sock)); # Error if socket connection failed!
-
-        $sock->send($output);
-        $input = udp_recieve($sock, $sa2dnsblc_timeout);
-        my $retry = 1;
-        while(!$input && $retry < $sa2dnsblc_retries) {
-        	$sock->send($output);
-        	$input = udp_recieve($sock, $sa2dnsblc_timeout);
-        	$retry++;
-        }
-        return 0 if($retry > $sa2dnsblc_retries);
-        if($input == 0) {
-        	dbg("SA2DNSBLC: sa2dnsbld could not be reached!");
-        } else {
-        	dbg("SA2DNSBLC: sa2dnsbld reports a reputation of $input % on this ip");
-        }
-        $sock->close();
+  my $status = '';
+  if($score >= $sa2dnsblc_spamscore) {
+    $status = 'spam';
+  } else {
+    $status = 'ham';
   }
-}
 
-sub udp_recieve {
-my ($sock, $sa2dnsblc_timeout) = @_;
-my $input;
-eval {
-    local $SIG{ALRM} = sub { return 0 };
-    alarm $sa2dnsblc_timeout;
-    $sock->recv($input, 1024);
-    alarm 0;
-    return $input;
-} or return 0;
+  my $sa2dnsblc_host = $permsgstatus->{main}->{conf}->{'sa2dnsblc_host'} || '127.0.0.1';
+  $sa2dnsblc_host = $1 if $sa2dnsblc_host =~ /^([a-zA-Z0-9\-.:]{1,255})$/; # untaint fqdn or ip;
+
+  my $sa2dnsblc_port = $permsgstatus->{main}->{conf}->{'sa2dnsblc_port'} || '5055';
+  $sa2dnsblc_port = $1 if $sa2dnsblc_port =~ /^([0-9]{1,5})$/; # untaint port;
+
+  my $input = '';
+  my $output = "$lasthopip#$status#$score#$subject";
+  my $sock = IO::Socket::INET->new(Proto => 'udp', PeerPort => $sa2dnsblc_port, PeerAddr => $sa2dnsblc_host);
+  return 0 if(!defined($sock)); # Error if socket connection failed!
+
+  $sock->send($output);
+  $sock->close();
 }
 
 1;
@@ -156,11 +112,8 @@ Mail::SpamAssassin::Plugin::sa2dnsblc - report spamming ip to the sa2dnsbld serv
 
     loadplugin Mail::SpamAssassin::Plugin::sa2dnsblc sa2dnsblc.pm
     sa2dnsblc_spamscore     5
-    sa2dnsblc_hamscore      0
     sa2dnsblc_host          127.0.0.1
     sa2dnsblc_port          5055
-    sa2dnsblc_timeout       2
-    sa2dnsblc_retries       2
     sa2dnsblc_check_mynets  0
 
     body     SA2DNSBLC eval:sa2dnsblc()

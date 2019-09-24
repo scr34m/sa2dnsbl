@@ -2,8 +2,8 @@
 # format:
 #   variable => value,
 
-LOCALPORT    => 5056,
-LOCALIP      => '127.0.0.1',
+LOCALPORT    => 5055,
+LOCALIP      => '0.0.0.0',
 DB_HOST      => 'localhost',
 DB_NAME      => 'sa2dnsbl',
 DB_USER      => 'root',

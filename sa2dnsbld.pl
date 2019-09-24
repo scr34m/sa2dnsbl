@@ -39,6 +39,13 @@ sub logdie {
   die $msg
 }
 
+sub uri_decode {
+my ($rv) = @_;
+$rv =~ s/\+/ /g;
+$rv =~ s/%(..)/pack("c",hex($1))/ge;
+return $rv;
+}
+
 sub TERM_handler {
   exit 0;
 }
@@ -83,6 +90,7 @@ if ( $config{DB_HOST} !~ /^[\w.-]+$/)   { logdie("error: DB_HOST has wrong forma
 if ( $config{DB_NAME} !~ /^\w+$/)   { logdie("error: DB_NAME has wrong format"); }
 if ( $config{DB_USER} !~ /^\w+$/)   { logdie("error: DB_USER has wrong format"); }
 if ( $config{DB_TABLE} !~ /^\w+$/)  { logdie("error: DB_TABLE has wrong format"); }
+if ( $config{DB_TABLE_LOG} !~ /^\w+$/)  { logdie("error: DB_TABLE_LOG has wrong format"); }
 if ( $config{DIV} !~ /^\d+$/)       { logdie("error: DIV is not a number"); }
 if ( $config{MAX} !~ /^\d+$/)       { logdie("error: MAX is not a number"); }
 if ( $config{DECAY} !~ /^\d+$/)     { logdie("error: DECAY is not a number"); }
@@ -116,15 +124,15 @@ while ($sock->recv($input, $max_package_length)) {
   $output = '';
   my ($remote_port, $remote_addr) = sockaddr_in($sock->peername);
   my $remote_ip = inet_ntoa($remote_addr);
-  my $remote_host = gethostbyaddr($remote_addr, AF_INET);
 
   if($input =~ /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/ or
      $input =~ /^[:a-f0-9]{2,41}/i ) {
     my @buffer = split(/#/, $input, 5);
     chomp(@buffer);
     # check if ip is already listed and get its values
-    $dbh = DBI->connect("DBI:mysql:$config{DB_NAME}:$config{DB_HOST}",
-                        "$config{DB_USER}", "$config{DB_PASS}");
+    $dbh = DBI->connect("DBI:mysql:$config{DB_NAME}:$config{DB_HOST}", "$config{DB_USER}", "$config{DB_PASS}", {mysql_enable_utf8 => 1});
+    $dbh->do(qq{SET NAMES 'utf8';});
+    $buffer[3] = $dbh->quote(uri_decode($buffer[3]));
     my $sql = "SELECT ip,reputation FROM $config{DB_TABLE} WHERE ip=INET6_ATON('$buffer[0]')";
     my $cursor = $dbh->prepare($sql);
     if (! $cursor->execute) { 
@@ -158,10 +166,21 @@ while ($sock->recv($input, $max_package_length)) {
       } else {  # mysql update was successful
         logit('debug', sprintf("remote_ip: %15s last reputation score: %3i %%", $buffer[0], $output));
       }
+
+      $sql = "INSERT INTO $config{DB_TABLE_LOG} (server_ip,ip,score,time,subject) \
+              VALUES (INET6_ATON('$remote_ip'),INET6_ATON('$buffer[0]'),$buffer[2],NOW(),$buffer[3])";
+      $cursor = $dbh->prepare($sql);
+      if (! $cursor->execute) { 
+        logit('err', "error: failed to execute SQL statement");
+        logit('err', $sql);
+        $output = '0';
+      } else {  # mysql update was successful
+        logit('debug', sprintf("remote_ip: %15s last reputation score: %3i %%", $buffer[0], $output));
+      }
+
     }
     $dbh->disconnect;
   }
-  $sock->send($output);
 } logdie("recv: $!");
 
 END {

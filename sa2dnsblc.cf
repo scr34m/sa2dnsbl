@@ -5,9 +5,6 @@ sa2dnsblc_spamscore     5
 sa2dnsblc_hamscore      0
 sa2dnsblc_host          127.0.0.1
 sa2dnsblc_port          5055
-sa2dnsblc_timeout       2
-sa2dnsblc_retries       2
-sa2dnsblc_check_mynets  0
 
 body      SA2DNSBLC     eval:sa2dnsblc()
 describe  SA2DNSBLC     IP reported to DNSBL Server
